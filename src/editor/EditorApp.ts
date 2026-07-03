@@ -53,6 +53,7 @@ export class EditorApp {
   private typeCount = 4;
   private groupCount = 8;
   private capacity = SETTINGS.defaultCapacity;
+  private conveyorCapacity = SETTINGS.conveyorCapacity;
   private queueCount = 5;
   private queues: LayerType[][] | null = null;
   private layoutSig = '';
@@ -95,6 +96,7 @@ export class EditorApp {
       this.levelId = lv.id;
       this.name = lv.name;
       this.capacity = lv.capacity;
+      this.conveyorCapacity = lv.conveyorCapacity ?? SETTINGS.conveyorCapacity;
       this.queues = lv.queues.map((q) => [...q]);
       this.queueCount = lv.queues.length;
       const total = lv.queues.reduce((n, q) => n + q.length, 0);
@@ -156,6 +158,8 @@ export class EditorApp {
           <input class="mini-num" data-f="capacity" type="number" min="2" max="20" /></div>
         <div class="ed-row"><span class="ed-label">Queues</span>
           <input class="mini-num" data-f="queues" type="number" min="1" max="9" /></div>
+        <div class="ed-row"><span class="ed-label">Belt</span>
+          <input class="mini-num" data-f="belt" type="number" min="1" max="30" /></div>
       </div>
       <div class="setup-summary" data-el="summary"></div>
       <div class="setup-warn" data-el="warn"></div>
@@ -170,6 +174,7 @@ export class EditorApp {
     f('groups').value = String(this.groupCount);
     f('capacity').value = String(this.capacity);
     f('queues').value = String(this.queueCount);
+    f('belt').value = String(this.conveyorCapacity);
 
     const readBack = () => {
       this.name = f('name').value || 'My Level';
@@ -177,9 +182,10 @@ export class EditorApp {
       this.groupCount = clampInt(f('groups').value, 1, 64, 8);
       this.capacity = clampInt(f('capacity').value, 2, 20, SETTINGS.defaultCapacity);
       this.queueCount = clampInt(f('queues').value, 1, 9, 5);
+      this.conveyorCapacity = clampInt(f('belt').value, 1, 30, SETTINGS.conveyorCapacity);
       this.updateSetupSummary();
     };
-    for (const k of ['name', 'types', 'groups', 'capacity', 'queues']) {
+    for (const k of ['name', 'types', 'groups', 'capacity', 'queues', 'belt']) {
       f(k).addEventListener('input', readBack);
     }
     this.updateSetupSummary();
@@ -544,6 +550,7 @@ export class EditorApp {
       id: this.levelId,
       name: this.name,
       capacity: this.capacity,
+      conveyorCapacity: this.conveyorCapacity,
       queues: (this.queues ?? []).map((q) => [...q]),
     };
   }

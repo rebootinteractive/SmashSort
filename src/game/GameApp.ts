@@ -65,6 +65,7 @@ export class GameApp {
   private beltSpan = 0;
   private queueCount: number;
   private capacity: number;
+  private beltCapacity: number;
 
   private onPointerDown = (e: PointerEvent) => this.handleTap(e);
 
@@ -72,6 +73,7 @@ export class GameApp {
     this.board = new Board(opts.level);
     this.capacity = opts.level.capacity;
     this.queueCount = opts.level.queues.length;
+    this.beltCapacity = opts.level.conveyorCapacity ?? SETTINGS.conveyorCapacity;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -110,7 +112,7 @@ export class GameApp {
     this.hud = new Hud(parent, {
       levelName: opts.level.name,
       totalContainers: this.board.totalContainers,
-      conveyorCapacity: SETTINGS.conveyorCapacity,
+      conveyorCapacity: this.beltCapacity,
       onMenu: opts.onMenu,
       onRestart: opts.onRestart,
       onNext: opts.onNext,
@@ -181,7 +183,7 @@ export class GameApp {
         this.shakeDeny(view, q); // tapped below the leader group
         return;
       }
-      const available = SETTINGS.conveyorCapacity - this.belt.length;
+      const available = this.beltCapacity - this.belt.length;
       const n = Math.min(group.count, available);
       if (n <= 0) {
         this.shakeDeny(view, q); // belt is full
@@ -232,7 +234,7 @@ export class GameApp {
         }
       );
     });
-    this.hud.setBelt(this.belt.length, this.belt.length >= SETTINGS.conveyorCapacity);
+    this.hud.setBelt(this.belt.length, this.belt.length >= this.beltCapacity);
     this.checkDeadlock();
   }
 
@@ -273,7 +275,7 @@ export class GameApp {
     }
     if (dropped.length) {
       this.belt = this.belt.filter((it) => !dropped.includes(it));
-      this.hud.setBelt(this.belt.length, this.belt.length >= SETTINGS.conveyorCapacity);
+      this.hud.setBelt(this.belt.length, this.belt.length >= this.beltCapacity);
     }
   }
 
@@ -363,7 +365,7 @@ export class GameApp {
 
   private checkDeadlock(): void {
     if (this.over) return;
-    if (this.belt.length < SETTINGS.conveyorCapacity) return;
+    if (this.belt.length < this.beltCapacity) return;
     if (this.belt.some((it) => this.board.anyAccept(it.type))) return;
     this.over = true;
     this.tweens.add(0.01, () => {}, { delay: 0.6, done: () => this.hud.showLose() });

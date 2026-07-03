@@ -6,6 +6,8 @@ export interface LevelData {
   name: string;
   /** Layers per container. Every container starts exactly full. */
   capacity: number;
+  /** Max layers on the conveyor. Falls back to SETTINGS.conveyorCapacity when absent. */
+  conveyorCapacity?: number;
   /**
    * One entry per queue (left to right). Each queue is a flat list of layer
    * types ordered bottom-to-top; containers are auto-sliced every `capacity`
