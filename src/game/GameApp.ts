@@ -33,6 +33,8 @@ interface BeltItem {
   type: number;
   x: number;
   riding: boolean;
+  /** Source container id — can't re-enter it until the belt wraps (cleared on wrap). */
+  block: number | null;
 }
 
 export class GameApp {
@@ -205,7 +207,13 @@ export class GameApp {
     const meshes = view.detachTop(removed.count, this.scene);
     const qx = queueX(q, this.queueCount);
     meshes.forEach((mesh, i) => {
-      const item: BeltItem = { mesh, type: removed.type, x: qx - i * 0.36, riding: false };
+      const item: BeltItem = {
+        mesh,
+        type: removed.type,
+        x: qx - i * 0.36,
+        riding: false,
+        block: leader.id,
+      };
       this.belt.push(item);
       const y0 = mesh.position.y;
       this.tweens.add(
@@ -241,13 +249,18 @@ export class GameApp {
       if (item.x > this.beltMaxX) {
         item.x -= this.beltSpan;
         wrapped = true;
+        item.block = null; // a full loop re-opens the source container
       }
       for (let q = 0; q < this.queueCount; q++) {
         const qx = queueX(q, this.queueCount);
         const crossed = wrapped
           ? qx > prev || qx <= item.x
           : qx > prev && qx <= item.x;
-        if (crossed && this.board.canAccept(q, item.type)) {
+        if (
+          crossed &&
+          this.board.leader(q)?.id !== item.block &&
+          this.board.canAccept(q, item.type)
+        ) {
           dropped.push(item);
           this.drop(item, q);
           break;
