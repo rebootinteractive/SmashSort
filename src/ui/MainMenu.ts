@@ -82,10 +82,24 @@ export class MainMenu {
       });
       right.append(edit, del);
     } else {
+      const dup = document.createElement('button');
+      dup.className = 'btn ghost small';
+      dup.textContent = '⧉';
+      dup.title = 'Duplicate & edit';
+      dup.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.opts.onEdit({
+          ...level,
+          id: `custom-${Date.now()}`,
+          name: `${level.name} Copy`,
+          ballQueues: level.ballQueues.map((q) => [...q]),
+          columns: level.columns.map((c) => [...c]),
+        });
+      });
       const badge = document.createElement('span');
       badge.className = 'badge';
       badge.textContent = 'PLAY';
-      right.appendChild(badge);
+      right.append(dup, badge);
     }
     el.addEventListener('click', () => this.opts.onPlay(level));
     return el;
