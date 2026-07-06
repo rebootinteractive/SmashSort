@@ -127,11 +127,14 @@ export class BallQueueView {
     this.layout();
   }
 
-  /** Target transform for the ball at queue position i. */
+  /** Vertical spacing between queued balls. */
+  static readonly SPACING = 0.6;
+
+  /** Target transform for the ball at queue position i — straight up, full size. */
   slot(i: number): { pos: THREE.Vector3; scale: number } {
     return {
-      pos: new THREE.Vector3(this.x, this.y + i * 0.22, -i * 0.55),
-      scale: 1 / (1 + i * 0.22),
+      pos: new THREE.Vector3(this.x, this.y + i * BallQueueView.SPACING, 0),
+      scale: 1,
     };
   }
 

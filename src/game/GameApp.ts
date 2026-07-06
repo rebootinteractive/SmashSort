@@ -406,7 +406,10 @@ export class GameApp {
     const tallest = Math.max(1, ...this.board.columns.map((c) => c.length));
     const maxQueue = Math.max(1, ...this.board.ballQueues.map((q) => q.length));
     const width = this.columnCount * QUEUE_PITCH + 1.1;
-    const top = Math.max(this.ballsY + 0.6 + Math.min(maxQueue, 6) * 0.22, BASE_Y + tallest * LAYER_H + 0.6);
+    const top = Math.max(
+      this.ballsY + maxQueue * BallQueueView.SPACING + 0.4,
+      BASE_Y + tallest * LAYER_H + 0.6
+    );
     const bottom = BASE_Y - 0.5;
     const height = top - bottom;
     const cy = (top + bottom) / 2;

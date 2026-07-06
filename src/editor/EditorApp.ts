@@ -750,8 +750,9 @@ export class EditorApp {
   private fitCamera(): void {
     const cy2 = this.conveyorY();
     const by = ballsYFor(cy2);
+    const maxQueue = Math.max(1, ...(this.ballQueues ?? [[]]).map((q) => q.length));
     const width = this.columnCount * QUEUE_PITCH + 1.1;
-    const top = by + 1.6; // headroom under the toolbar
+    const top = by + maxQueue * BallQueueView.SPACING + 0.9; // headroom under the toolbar
     const bottom = BASE_Y - 0.8;
     const height = top - bottom;
     const cy = (top + bottom) / 2;
