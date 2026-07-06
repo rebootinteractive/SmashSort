@@ -34,8 +34,8 @@ interface BeltItem {
   type: number;
   x: number;
   riding: boolean;
-  /** Layers are inert until they pass the wrap point — then they can land anywhere. */
-  armed: boolean;
+  /** Column this layer was ejected from — it can't return there until it wraps. */
+  block: number | null;
 }
 
 export class GameApp {
@@ -190,7 +190,7 @@ export class GameApp {
         type: removed.type,
         x: cx - i * 0.36,
         riding: false,
-        armed: false,
+        block: c,
       };
       this.belt.push(item);
       const y0 = mesh.position.y;
@@ -228,12 +228,12 @@ export class GameApp {
       if (item.x > this.beltMaxX) {
         item.x -= this.beltSpan;
         wrapped = true;
-        item.armed = true; // passing the wrap point arms the layer
+        item.block = null; // a full loop re-opens the source column
       }
       for (let c = 0; c < this.columnCount; c++) {
         const cx = queueX(c, this.columnCount);
         const crossed = wrapped ? cx > prev || cx <= item.x : cx > prev && cx <= item.x;
-        if (crossed && item.armed && this.board.canAccept(c, item.type)) {
+        if (crossed && c !== item.block && this.board.canAccept(c, item.type)) {
           dropped.push(item);
           this.drop(item, c);
           break;
