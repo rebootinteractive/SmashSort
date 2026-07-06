@@ -54,6 +54,8 @@ export class GameApp {
   private pendingDrops = new Map<number, number>();
   /** Containers logically popped, awaiting in-flight drops before the view pops. */
   private popWaiting = new Map<number, number>(); // containerId -> queue index
+  /** Container views mid-relocation — excluded from queue-advance retargeting. */
+  private relocating = new Set<number>();
   private bursts: PopBurst[] = [];
   private conveyor: { group: THREE.Group; dispose(): void };
   private hud: Hud;
@@ -341,6 +343,7 @@ export class GameApp {
           const at = arr.indexOf(view);
           if (at >= 0) arr.splice(at, 1);
           arr.forEach((v, i) => {
+            if (this.relocating.has(v.id)) return;
             const fromY = v.group.position.y;
             const toY = this.settledGroupY(i);
             this.tweens.add(0.3, (k) => {
@@ -357,7 +360,41 @@ export class GameApp {
       this.over = true;
       this.tweens.add(0.01, () => {}, { delay: 0.8, done: () => this.hud.showWin() });
     } else {
+      this.refillEmptyQueues();
       this.checkDeadlock();
+    }
+  }
+
+  /** Soft-lock prevention: emptied queues borrow the bottom container of the fullest queue. */
+  private refillEmptyQueues(): void {
+    for (let q = 0; q < this.queueCount; q++) {
+      if (this.board.queues[q].containers.length > 0) continue;
+      const moved = this.board.relocateBottomContainer(q);
+      if (!moved) continue;
+      const view = this.viewById.get(moved.container.id);
+      if (!view) continue;
+      const src = this.queueViews[moved.fromQ];
+      const at = src.indexOf(view);
+      if (at >= 0) src.splice(at, 1);
+      this.queueViews[q].push(view);
+      const from = view.group.position.clone();
+      const to = new THREE.Vector3(queueX(q, this.queueCount), this.settledGroupY(0), 0);
+      this.relocating.add(view.id);
+      this.tweens.add(
+        0.5,
+        (k) => {
+          view.group.position.lerpVectors(from, to, k);
+          view.group.position.z = Math.sin(k * Math.PI) * 0.9; // lift in front of the wall
+        },
+        {
+          ease: easeInOutCubic,
+          delay: 0.25,
+          done: () => {
+            view.group.position.copy(to);
+            this.relocating.delete(view.id);
+          },
+        }
+      );
     }
   }
 

@@ -102,6 +102,33 @@ export class Board {
     return this.destroyed >= this.totalContainers;
   }
 
+  /**
+   * Soft-lock prevention: refill an emptied queue by moving the bottom
+   * (never the leader) container from the most crowded queue. Ties break
+   * toward more total layers. Returns null when no queue can donate.
+   */
+  relocateBottomContainer(toQ: number): { container: ContainerState; fromQ: number } | null {
+    if (this.queues[toQ].containers.length > 0) return null;
+    const layerCount = (q: number) =>
+      this.queues[q].containers.reduce((n, c) => n + c.layers.length, 0);
+    let best = -1;
+    for (let q = 0; q < this.queues.length; q++) {
+      if (q === toQ || this.queues[q].containers.length < 2) continue;
+      if (
+        best < 0 ||
+        this.queues[q].containers.length > this.queues[best].containers.length ||
+        (this.queues[q].containers.length === this.queues[best].containers.length &&
+          layerCount(q) > layerCount(best))
+      ) {
+        best = q;
+      }
+    }
+    if (best < 0) return null;
+    const container = this.queues[best].containers.pop()!;
+    this.queues[toQ].containers.push(container);
+    return { container, fromQ: best };
+  }
+
   /** True when some queue can accept a layer of this type. */
   anyAccept(type: LayerType): boolean {
     for (let q = 0; q < this.queues.length; q++) {
