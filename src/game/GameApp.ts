@@ -167,12 +167,11 @@ export class GameApp {
         this.shakeDeny(view, c); // tapped below the top group
         return;
       }
-      const n = Math.min(group.count, this.beltCapacity - this.belt.length);
-      if (n <= 0) {
-        this.shakeDeny(view, c); // belt is full
+      if (group.count > this.beltCapacity - this.belt.length) {
+        this.shakeDeny(view, c); // whole group must fit on the belt
         return;
       }
-      this.eject(c, n);
+      this.eject(c, group.count);
       return;
     }
   }
