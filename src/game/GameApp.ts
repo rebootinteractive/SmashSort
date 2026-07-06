@@ -58,6 +58,7 @@ export class GameApp {
   private pendingDrops: number[] = []; // per column, in-flight drop meshes
   private smashQueue: Smash[] = [];
   private smashRunning = false;
+  private smashedShown = 0; // balls whose smash animation has actually played
   private smashLocked = new Set<number>(); // columns awaiting a smash animation
   private bursts: PopBurst[] = [];
   private conveyor: { group: THREE.Group; dispose(): void };
@@ -336,12 +337,14 @@ export class GameApp {
               m.scale.setScalar(fromScale + (to.scale - fromScale) * k);
             }, { ease: easeOutCubic });
           });
-          this.hud.setSmashed(this.board.consumed);
+          this.smashedShown++;
+          this.hud.setSmashed(this.smashedShown);
           this.smashRunning = false;
           if (!this.smashQueue.some((t) => t.col === task.col)) {
             this.smashLocked.delete(task.col);
           }
-          if (this.board.won) {
+          // Win only when the LAST queued smash has actually played out.
+          if (this.board.won && this.smashQueue.length === 0) {
             this.over = true;
             this.tweens.add(0.01, () => {}, { delay: 0.8, done: () => this.hud.showWin() });
           } else {
