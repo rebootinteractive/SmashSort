@@ -34,7 +34,11 @@ interface BeltItem {
   type: number;
   x: number;
   riding: boolean;
-  /** Column this layer was ejected from — it can't return there until it wraps. */
+  /**
+   * Until the layer wraps, it can only land in columns strictly to the right of
+   * this index (its source column). Trailing layers spawn behind the source, so
+   * columns at or before it must not pull them. Null once wrapped = all open.
+   */
   block: number | null;
 }
 
@@ -233,7 +237,8 @@ export class GameApp {
       for (let c = 0; c < this.columnCount; c++) {
         const cx = queueX(c, this.columnCount);
         const crossed = wrapped ? cx > prev || cx <= item.x : cx > prev && cx <= item.x;
-        if (crossed && c !== item.block && this.board.canAccept(c, item.type)) {
+        const open = item.block === null || c > item.block;
+        if (crossed && open && this.board.canAccept(c, item.type)) {
           dropped.push(item);
           this.drop(item, c);
           break;
