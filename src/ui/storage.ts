@@ -7,7 +7,11 @@ export function loadCustomLevels(): LevelData[] {
     const raw = localStorage.getItem(KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as LevelData[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    // Drop stale v1 (container-format) levels — v2 levels have columns + ballQueues.
+    return (parsed as LevelData[]).filter(
+      (l) => Array.isArray(l.columns) && Array.isArray(l.ballQueues)
+    );
   } catch {
     return [];
   }

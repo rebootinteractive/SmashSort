@@ -1,5 +1,5 @@
 import type { LevelData } from '../shared/types';
-import { containerCount, typeCount } from '../shared/types';
+import { totalBalls, typeCount } from '../shared/types';
 import { ALL_LEVELS } from '../levels';
 import { loadCustomLevels, deleteCustomLevel } from './storage';
 
@@ -22,7 +22,7 @@ export class MainMenu {
   private render(): void {
     this.root.innerHTML = `
       <div class="menu-title">SmashSort</div>
-      <div class="menu-sub">Tap the top color group. Sort the belt. Smash containers.</div>
+      <div class="menu-sub">Stack up a charge. Feed the balls. Smash the wall.</div>
       <div class="menu-section-label">Levels</div>
       <div class="level-list" data-el="levels"></div>
       <div class="menu-section-label" data-el="custom-label"></div>
@@ -55,7 +55,7 @@ export class MainMenu {
   private card(level: LevelData, custom: boolean): HTMLElement {
     const el = document.createElement('div');
     el.className = 'level-card';
-    const meta = `${level.queues.length} queues · ${containerCount(level)} containers · ${typeCount(level)} colors`;
+    const meta = `${level.columns.length} columns · ${totalBalls(level)} balls · ${typeCount(level)} colors`;
     el.innerHTML = `
       <div>
         <div class="name"></div>

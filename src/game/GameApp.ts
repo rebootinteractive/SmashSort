@@ -2,9 +2,10 @@ import * as THREE from 'three';
 import type { LevelData } from '../shared/types';
 import { SETTINGS } from '../shared/settings';
 import { PALETTE } from '../shared/colors';
-import { Board } from './Board';
+import { Board, Smash } from './Board';
 import {
-  ContainerView,
+  ColumnView,
+  BallQueueView,
   PopBurst,
   disposeMesh,
   makeConveyor,
@@ -12,12 +13,12 @@ import {
 import { Tweens, easeOutCubic, easeInOutCubic } from './Tween';
 import { Hud } from './Hud';
 import {
-  CONVEYOR_Y,
+  BASE_Y,
+  LAYER_H,
   QUEUE_PITCH,
-  TOP_Y,
-  containerHeight,
-  containerPitch,
-  containerTopY,
+  ballsYFor,
+  conveyorYFor,
+  layerY,
   queueX,
 } from './layout';
 
@@ -33,7 +34,7 @@ interface BeltItem {
   type: number;
   x: number;
   riding: boolean;
-  /** Source container id — can't re-enter it until the belt wraps (cleared on wrap). */
+  /** Source column — can't re-enter it until the belt wraps (cleared on wrap). */
   block: number | null;
 }
 
@@ -47,15 +48,13 @@ export class GameApp {
   private resizeObserver: ResizeObserver;
 
   private board: Board;
-  /** Per queue, leader-first — mirrors board (catches up after pop animations). */
-  private queueViews: ContainerView[][] = [];
-  private viewById = new Map<number, ContainerView>();
+  private columnViews: ColumnView[] = [];
+  private ballQueueViews: BallQueueView[] = [];
   private belt: BeltItem[] = [];
-  private pendingDrops = new Map<number, number>();
-  /** Containers logically popped, awaiting in-flight drops before the view pops. */
-  private popWaiting = new Map<number, number>(); // containerId -> queue index
-  /** Container views mid-relocation — excluded from queue-advance retargeting. */
-  private relocating = new Set<number>();
+  private pendingDrops: number[] = []; // per column, in-flight drop meshes
+  private smashQueue: Smash[] = [];
+  private smashRunning = false;
+  private smashLocked = new Set<number>(); // columns awaiting a smash animation
   private bursts: PopBurst[] = [];
   private conveyor: { group: THREE.Group; dispose(): void };
   private hud: Hud;
@@ -63,19 +62,24 @@ export class GameApp {
   private over = false;
   private shake = 0;
   private camBase = new THREE.Vector3();
+  private camTarget = new THREE.Vector3();
+  private camLook = new THREE.Vector3();
   private beltMaxX = 0;
   private beltSpan = 0;
-  private queueCount: number;
-  private capacity: number;
+  private columnCount: number;
   private beltCapacity: number;
+  private conveyorY: number;
+  private ballsY: number;
 
   private onPointerDown = (e: PointerEvent) => this.handleTap(e);
 
   constructor(private parent: HTMLElement, private opts: GameAppOptions) {
     this.board = new Board(opts.level);
-    this.capacity = opts.level.capacity;
-    this.queueCount = opts.level.queues.length;
+    this.columnCount = opts.level.columns.length;
     this.beltCapacity = opts.level.conveyorCapacity ?? SETTINGS.conveyorCapacity;
+    const tallest = Math.max(1, ...opts.level.columns.map((c) => c.length));
+    this.conveyorY = conveyorYFor(tallest, opts.level.charge);
+    this.ballsY = ballsYFor(this.conveyorY);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -88,32 +92,34 @@ export class GameApp {
     dir.position.set(2, 5, 7);
     this.scene.add(dir);
 
-    // Build wall views from board state.
-    for (let q = 0; q < this.queueCount; q++) {
-      const views: ContainerView[] = [];
-      const containers = this.board.queues[q].containers;
-      for (let i = 0; i < containers.length; i++) {
-        const c = containers[i];
-        const view = new ContainerView(c.id, c.capacity);
-        view.group.position.set(queueX(q, this.queueCount), this.settledGroupY(i), 0);
-        for (let j = 0; j < c.layers.length; j++) view.addLayer(c.layers[j], j);
-        this.scene.add(view.group);
-        views.push(view);
-        this.viewById.set(c.id, view);
-      }
-      this.queueViews.push(views);
+    // Columns
+    for (let c = 0; c < this.columnCount; c++) {
+      const view = new ColumnView();
+      view.group.position.set(queueX(c, this.columnCount), BASE_Y, 0);
+      this.board.columns[c].forEach((t, j) => view.addLayer(t, j));
+      this.scene.add(view.group);
+      this.columnViews.push(view);
+      this.pendingDrops.push(0);
     }
 
-    const wallWidth = this.queueCount * QUEUE_PITCH;
-    this.beltSpan = wallWidth + 2.6;
+    // Conveyor
+    this.beltSpan = this.columnCount * QUEUE_PITCH + 2.6;
     this.beltMaxX = this.beltSpan / 2;
     this.conveyor = makeConveyor(this.beltSpan);
-    this.conveyor.group.position.y = CONVEYOR_Y;
+    this.conveyor.group.position.y = this.conveyorY;
     this.scene.add(this.conveyor.group);
+
+    // Ball queues
+    const qn = this.board.ballQueues.length;
+    for (let q = 0; q < qn; q++) {
+      this.ballQueueViews.push(
+        new BallQueueView(this.scene, this.board.ballQueues[q], queueX(q, qn), this.ballsY)
+      );
+    }
 
     this.hud = new Hud(parent, {
       levelName: opts.level.name,
-      totalContainers: this.board.totalContainers,
+      totalBalls: this.board.totalBalls,
       conveyorCapacity: this.beltCapacity,
       onMenu: opts.onMenu,
       onRestart: opts.onRestart,
@@ -124,38 +130,12 @@ export class GameApp {
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(parent);
     this.handleResize();
+    this.camBase.copy(this.camTarget);
 
-    // Levels may start with already-poppable containers — resolve them up front.
-    let delay = 0.35;
-    for (let q = 0; q < this.queueCount; q++) {
-      let leader = this.board.leader(q);
-      while (leader && this.board.isPoppable(leader)) {
-        const id = leader.id;
-        this.board.popLeader(q);
-        this.popWaiting.set(id, q);
-        this.tweens.add(0.01, () => {}, { delay, done: () => this.runViewPop(id) });
-        delay += 0.3;
-        leader = this.board.leader(q);
-      }
-    }
+    // Levels may start with smashable groups — settle them up front.
+    this.tweens.add(0.01, () => {}, { delay: 0.4, done: () => this.settleSmashes() });
 
     this.rafId = requestAnimationFrame(this.tick);
-  }
-
-  // ---- layout helpers -------------------------------------------------
-
-  /** Settled group-origin y (bottom of layer stack) for container depth i. */
-  private settledGroupY(i: number): number {
-    return containerTopY(i, this.capacity) - containerHeight(this.capacity);
-  }
-
-  /** Settled world position of slot `index` in queue q's container at depth i. */
-  private settledSlot(q: number, depth: number, index: number): THREE.Vector3 {
-    return new THREE.Vector3(
-      queueX(q, this.queueCount),
-      this.settledGroupY(depth) + (index + 0.5) * 0.2,
-      0
-    );
   }
 
   // ---- input -----------------------------------------------------------
@@ -170,53 +150,47 @@ export class GameApp {
     const ray = new THREE.Raycaster();
     ray.setFromCamera(ndc, this.camera);
 
-    // Only leader containers are tappable.
-    for (let q = 0; q < this.queueCount; q++) {
-      const leader = this.board.leader(q);
-      if (!leader) continue;
-      const view = this.viewById.get(leader.id)!;
+    for (let c = 0; c < this.columnCount; c++) {
+      const view = this.columnViews[c];
       const hits = ray.intersectObjects(view.layerMeshes, false);
       if (hits.length === 0) continue;
-      const mesh = hits[0].object as THREE.Mesh;
-      const idx = view.layerMeshes.indexOf(mesh);
-      const group = this.board.topGroup(leader);
+      if (this.smashLocked.has(c)) return; // a ball is already inbound
+      const group = this.board.topGroup(c);
       if (!group) return;
-      if (idx < leader.layers.length - group.count) {
-        this.shakeDeny(view, q); // tapped below the leader group
+      const idx = view.layerMeshes.indexOf(hits[0].object as THREE.Mesh);
+      if (idx < this.board.columns[c].length - group.count) {
+        this.shakeDeny(view, c); // tapped below the top group
         return;
       }
-      const available = this.beltCapacity - this.belt.length;
-      const n = Math.min(group.count, available);
+      const n = Math.min(group.count, this.beltCapacity - this.belt.length);
       if (n <= 0) {
-        this.shakeDeny(view, q); // belt is full
+        this.shakeDeny(view, c); // belt is full
         return;
       }
-      this.eject(q, n);
+      this.eject(c, n);
       return;
     }
   }
 
-  private shakeDeny(view: ContainerView, q: number): void {
-    const bx = queueX(q, this.queueCount);
+  private shakeDeny(view: ColumnView, c: number): void {
+    const bx = queueX(c, this.columnCount);
     this.tweens.add(0.3, (k) => {
       view.group.position.x = bx + Math.sin(k * Math.PI * 4) * (1 - k) * 0.06;
     });
   }
 
-  private eject(q: number, n: number): void {
-    const removed = this.board.eject(q, n);
+  private eject(c: number, n: number): void {
+    const removed = this.board.eject(c, n);
     if (!removed) return;
-    const leader = this.board.leader(q)!;
-    const view = this.viewById.get(leader.id)!;
-    const meshes = view.detachTop(removed.count, this.scene);
-    const qx = queueX(q, this.queueCount);
+    const meshes = this.columnViews[c].detachTop(removed.count, this.scene);
+    const cx = queueX(c, this.columnCount);
     meshes.forEach((mesh, i) => {
       const item: BeltItem = {
         mesh,
         type: removed.type,
-        x: qx - i * 0.36,
+        x: cx - i * 0.36,
         riding: false,
-        block: leader.id,
+        block: c,
       };
       this.belt.push(item);
       const y0 = mesh.position.y;
@@ -224,19 +198,20 @@ export class GameApp {
         0.26,
         (k) => {
           mesh.position.x = item.x;
-          mesh.position.y = y0 + (CONVEYOR_Y - y0) * k + Math.sin(k * Math.PI) * 0.3;
+          mesh.position.y = y0 + (this.conveyorY - y0) * k + Math.sin(k * Math.PI) * 0.3;
         },
         {
           ease: easeInOutCubic,
           delay: i * 0.04,
           done: () => {
-            mesh.position.y = CONVEYOR_Y;
+            mesh.position.y = this.conveyorY;
             item.riding = true;
           },
         }
       );
     });
     this.hud.setBelt(this.belt.length, this.belt.length >= this.beltCapacity);
+    this.settleSmashes(); // ejecting may expose a buried >= charge group
     this.checkDeadlock();
   }
 
@@ -253,26 +228,20 @@ export class GameApp {
       if (item.x > this.beltMaxX) {
         item.x -= this.beltSpan;
         wrapped = true;
-        item.block = null; // a full loop re-opens the source container
+        item.block = null; // a full loop re-opens the source column
       }
-      for (let q = 0; q < this.queueCount; q++) {
-        const qx = queueX(q, this.queueCount);
-        const crossed = wrapped
-          ? qx > prev || qx <= item.x
-          : qx > prev && qx <= item.x;
-        if (
-          crossed &&
-          this.board.leader(q)?.id !== item.block &&
-          this.board.canAccept(q, item.type)
-        ) {
+      for (let c = 0; c < this.columnCount; c++) {
+        const cx = queueX(c, this.columnCount);
+        const crossed = wrapped ? cx > prev || cx <= item.x : cx > prev && cx <= item.x;
+        if (crossed && c !== item.block && this.board.canAccept(c, item.type)) {
           dropped.push(item);
-          this.drop(item, q);
+          this.drop(item, c);
           break;
         }
       }
       if (!dropped.includes(item)) {
         item.mesh.position.x = item.x;
-        item.mesh.position.y = CONVEYOR_Y;
+        item.mesh.position.y = this.conveyorY;
       }
     }
     if (dropped.length) {
@@ -281,13 +250,12 @@ export class GameApp {
     }
   }
 
-  private drop(item: BeltItem, q: number): void {
-    const { container, index } = this.board.accept(q, item.type);
-    const depth = this.board.queues[q].containers.indexOf(container);
-    const target = this.settledSlot(q, depth, index);
+  private drop(item: BeltItem, c: number): void {
+    const index = this.board.accept(c, item.type);
+    const target = new THREE.Vector3(queueX(c, this.columnCount), layerY(index), 0);
     const start = item.mesh.position.clone();
     start.x = item.x;
-    this.pendingDrops.set(container.id, (this.pendingDrops.get(container.id) ?? 0) + 1);
+    this.pendingDrops[c]++;
 
     this.tweens.add(
       0.3,
@@ -298,110 +266,93 @@ export class GameApp {
       {
         ease: easeInOutCubic,
         done: () => {
-          const view = this.viewById.get(container.id);
-          if (view) view.attachAt(item.mesh, index);
-          const left = (this.pendingDrops.get(container.id) ?? 1) - 1;
-          this.pendingDrops.set(container.id, left);
-          if (left === 0 && this.popWaiting.has(container.id)) {
-            this.runViewPop(container.id);
+          this.columnViews[c].attachAt(item.mesh, index);
+          this.pendingDrops[c]--;
+          this.processSmashQueue();
+        },
+      }
+    );
+
+    this.settleSmashes(); // logic settles immediately; the view catches up
+    this.checkDeadlock();
+  }
+
+  // ---- smashes ------------------------------------------------------------
+
+  /** Run all available smashes in logic; queue their animations. */
+  private settleSmashes(): void {
+    let s = this.board.findSmash();
+    while (s) {
+      this.board.smash(s);
+      this.smashQueue.push(s);
+      this.smashLocked.add(s.col);
+      s = this.board.findSmash();
+    }
+    this.processSmashQueue();
+  }
+
+  private processSmashQueue(): void {
+    if (this.smashRunning || this.smashQueue.length === 0) return;
+    const task = this.smashQueue[0];
+    if (this.pendingDrops[task.col] > 0) return; // wait for in-flight layers to land
+    this.smashQueue.shift();
+    this.smashRunning = true;
+
+    const view = this.columnViews[task.col];
+    const ball = this.ballQueueViews[task.queue].takeLeader();
+    const target = view.topGroupCenter(this.board.charge);
+    const start = ball ? ball.position.clone() : target.clone();
+
+    this.tweens.add(
+      0.38,
+      (k) => {
+        if (!ball) return;
+        ball.position.lerpVectors(start, target, k);
+        ball.position.z += Math.sin(k * Math.PI) * 1.1; // arc out in front
+        ball.scale.setScalar(1 + k * 0.3);
+      },
+      {
+        ease: easeInOutCubic,
+        done: () => {
+          this.bursts.push(
+            new PopBurst(this.scene, target, PALETTE[task.type % PALETTE.length])
+          );
+          this.shake = 0.3;
+          for (const m of view.detachTop(this.board.charge, this.scene)) disposeMesh(m);
+          if (ball) disposeMesh(ball);
+          // Queue advances: remaining balls roll forward.
+          const qv = this.ballQueueViews[task.queue];
+          qv.ballMeshes.forEach((m, i) => {
+            const from = m.position.clone();
+            const fromScale = m.scale.x;
+            const to = qv.slot(i);
+            this.tweens.add(0.25, (k) => {
+              m.position.lerpVectors(from, to.pos, k);
+              m.scale.setScalar(fromScale + (to.scale - fromScale) * k);
+            }, { ease: easeOutCubic });
+          });
+          this.hud.setSmashed(this.board.consumed);
+          this.smashRunning = false;
+          if (!this.smashQueue.some((t) => t.col === task.col)) {
+            this.smashLocked.delete(task.col);
+          }
+          if (this.board.won) {
+            this.over = true;
+            this.tweens.add(0.01, () => {}, { delay: 0.8, done: () => this.hud.showWin() });
+          } else {
+            this.processSmashQueue();
+            this.checkDeadlock();
           }
         },
       }
     );
-
-    // Logic settles immediately; the view catches up.
-    if (this.board.leader(q) === container && this.board.isPoppable(container)) {
-      this.board.popLeader(q);
-      this.popWaiting.set(container.id, q);
-    }
-    this.checkDeadlock();
-  }
-
-  // ---- pops ------------------------------------------------------------
-
-  private runViewPop(containerId: number): void {
-    const q = this.popWaiting.get(containerId);
-    this.popWaiting.delete(containerId);
-    const view = this.viewById.get(containerId);
-    if (q === undefined || !view) return;
-
-    const type = (view.layerMeshes[0]?.userData.type as number) ?? 0;
-    this.bursts.push(new PopBurst(this.scene, view.center(), PALETTE[type % PALETTE.length]));
-    this.shake = 0.3;
-
-    // Scale-punch out, then remove and let the queue advance upward.
-    const g = view.group;
-    const baseScale = g.scale.x;
-    this.tweens.add(
-      0.16,
-      (k) => g.scale.setScalar(baseScale * (1 + 0.25 * Math.sin(k * Math.PI) - k)),
-      {
-        done: () => {
-          view.dispose();
-          this.viewById.delete(containerId);
-          const arr = this.queueViews[q];
-          const at = arr.indexOf(view);
-          if (at >= 0) arr.splice(at, 1);
-          arr.forEach((v, i) => {
-            if (this.relocating.has(v.id)) return;
-            const fromY = v.group.position.y;
-            const toY = this.settledGroupY(i);
-            this.tweens.add(0.3, (k) => {
-              v.group.position.y = fromY + (toY - fromY) * k;
-            }, { ease: easeOutCubic, delay: 0.05 });
-          });
-        },
-      }
-    );
-
-    this.hud.setSmashed(this.board.destroyed);
-
-    if (this.board.won) {
-      this.over = true;
-      this.tweens.add(0.01, () => {}, { delay: 0.8, done: () => this.hud.showWin() });
-    } else {
-      this.refillEmptyQueues();
-      this.checkDeadlock();
-    }
-  }
-
-  /** Soft-lock prevention: emptied queues borrow the bottom container of the fullest queue. */
-  private refillEmptyQueues(): void {
-    for (let q = 0; q < this.queueCount; q++) {
-      if (this.board.queues[q].containers.length > 0) continue;
-      const moved = this.board.relocateBottomContainer(q);
-      if (!moved) continue;
-      const view = this.viewById.get(moved.container.id);
-      if (!view) continue;
-      const src = this.queueViews[moved.fromQ];
-      const at = src.indexOf(view);
-      if (at >= 0) src.splice(at, 1);
-      this.queueViews[q].push(view);
-      const from = view.group.position.clone();
-      const to = new THREE.Vector3(queueX(q, this.queueCount), this.settledGroupY(0), 0);
-      this.relocating.add(view.id);
-      this.tweens.add(
-        0.5,
-        (k) => {
-          view.group.position.lerpVectors(from, to, k);
-          view.group.position.z = Math.sin(k * Math.PI) * 0.9; // lift in front of the wall
-        },
-        {
-          ease: easeInOutCubic,
-          delay: 0.25,
-          done: () => {
-            view.group.position.copy(to);
-            this.relocating.delete(view.id);
-          },
-        }
-      );
-    }
   }
 
   // ---- lose ------------------------------------------------------------
 
   private checkDeadlock(): void {
     if (this.over) return;
+    if (this.smashQueue.length > 0 || this.smashRunning) return;
     if (this.belt.length < this.beltCapacity) return;
     if (this.belt.some((it) => this.board.anyAccept(it.type))) return;
     this.over = true;
@@ -420,6 +371,9 @@ export class GameApp {
       if (!alive) b.dispose();
       return alive;
     });
+    // Smooth camera refit toward the current target (stacks can grow).
+    this.fitCamera();
+    this.camBase.lerp(this.camTarget, Math.min(1, dt * 4));
     if (this.shake > 0) {
       this.shake = Math.max(0, this.shake - dt);
       const a = this.shake * 0.12;
@@ -431,6 +385,7 @@ export class GameApp {
     } else {
       this.camera.position.copy(this.camBase);
     }
+    this.camera.lookAt(this.camLook);
     this.renderer.render(this.scene, this.camera);
   };
 
@@ -443,25 +398,23 @@ export class GameApp {
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.fitCamera();
+    this.camBase.copy(this.camTarget);
     this.camera.updateProjectionMatrix();
   }
 
   private fitCamera(): void {
-    const maxContainers = Math.max(
-      1,
-      ...this.opts.level.queues.map((f) => Math.ceil(f.length / this.capacity))
-    );
-    const width = this.queueCount * QUEUE_PITCH + 1.1;
-    const top = CONVEYOR_Y + 0.9;
-    const bottom = TOP_Y - maxContainers * containerPitch(this.capacity) - 0.2;
+    const tallest = Math.max(1, ...this.board.columns.map((c) => c.length));
+    const maxQueue = Math.max(1, ...this.board.ballQueues.map((q) => q.length));
+    const width = this.columnCount * QUEUE_PITCH + 1.1;
+    const top = Math.max(this.ballsY + 0.6 + Math.min(maxQueue, 6) * 0.22, BASE_Y + tallest * LAYER_H + 0.6);
+    const bottom = BASE_Y - 0.5;
     const height = top - bottom;
     const cy = (top + bottom) / 2;
     const fovV = THREE.MathUtils.degToRad(this.camera.fov);
     const fovH = 2 * Math.atan(Math.tan(fovV / 2) * this.camera.aspect);
     const d = Math.max(height / (2 * Math.tan(fovV / 2)), width / (2 * Math.tan(fovH / 2)));
-    this.camBase.set(0, cy, d + 1.2);
-    this.camera.position.copy(this.camBase);
-    this.camera.lookAt(0, cy, 0);
+    this.camTarget.set(0, cy, d + 1.4);
+    this.camLook.set(0, cy, 0);
   }
 
   // ---- teardown ------------------------------------------------------------
@@ -471,9 +424,10 @@ export class GameApp {
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.resizeObserver.disconnect();
     this.tweens.clear();
-    for (const views of this.queueViews) for (const v of [...views]) v.dispose();
-    this.queueViews = [];
-    this.viewById.clear();
+    for (const v of this.columnViews) v.dispose();
+    this.columnViews = [];
+    for (const q of this.ballQueueViews) q.dispose();
+    this.ballQueueViews = [];
     for (const item of this.belt) disposeMesh(item.mesh);
     this.belt = [];
     for (const b of this.bursts) b.dispose();

@@ -1,6 +1,6 @@
 export interface HudOptions {
   levelName: string;
-  totalContainers: number;
+  totalBalls: number;
   conveyorCapacity: number;
   onMenu(): void;
   onRestart(): void;
@@ -24,7 +24,7 @@ export class Hud {
         <button class="btn ghost small" data-act="restart">↻</button>
       </div>
       <div class="hud-counters">
-        <span class="hud-pill">💥 <strong data-el="smashed">0</strong>/${opts.totalContainers}</span>
+        <span class="hud-pill">💥 <strong data-el="smashed">0</strong>/${opts.totalBalls}</span>
         <span class="hud-pill">Belt <strong data-el="belt">0</strong>/${opts.conveyorCapacity}</span>
       </div>`;
     parent.appendChild(this.root);
@@ -49,7 +49,7 @@ export class Hud {
     this.showModal(
       'win',
       'Smashed!',
-      'Every container destroyed. Nice sorting.',
+      'Every ball spent, every layer gone. Nice sorting.',
       this.opts.onNext
         ? [
             { label: 'Next Level', cls: 'btn', act: this.opts.onNext },

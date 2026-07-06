@@ -1,19 +1,11 @@
 import * as THREE from 'three';
 import { PALETTE } from '../shared/colors';
-import {
-  LAYER_W,
-  LAYER_H,
-  LAYER_D,
-  containerHeight,
-  layerLocalY,
-} from './layout';
+import { LAYER_W, LAYER_H, LAYER_D, layerY, BASE_Y } from './layout';
 
 // Shared, never-mutated geometries — safe as module statics (page-session lifetime).
 const layerGeo = new THREE.BoxGeometry(LAYER_W, LAYER_H * 0.9, LAYER_D);
 const shardGeo = new THREE.BoxGeometry(0.14, 0.1, 0.14);
-
-const FRAME_COLOR = 0xb4b9c4;
-const FRAME_DARK = 0x9599a4;
+const ballGeo = new THREE.SphereGeometry(0.26, 24, 18);
 
 /** Fresh material per layer — pop/fade animations mutate materials, so no sharing. */
 export function makeLayerMesh(type: number): THREE.Mesh {
@@ -27,6 +19,17 @@ export function makeLayerMesh(type: number): THREE.Mesh {
   return mesh;
 }
 
+export function makeBallMesh(type: number): THREE.Mesh {
+  const mat = new THREE.MeshStandardMaterial({
+    color: PALETTE[type % PALETTE.length],
+    roughness: 0.25,
+    metalness: 0.15,
+  });
+  const mesh = new THREE.Mesh(ballGeo, mat);
+  mesh.userData.type = type;
+  return mesh;
+}
+
 export function disposeMesh(mesh: THREE.Mesh): void {
   mesh.parent?.remove(mesh);
   (mesh.material as THREE.Material).dispose();
@@ -34,45 +37,35 @@ export function disposeMesh(mesh: THREE.Mesh): void {
 }
 
 /**
- * One container: back panel + separator slab + the layer meshes.
- * Group origin = bottom center of the layer stack.
+ * One column: a floor slab + the layer meshes.
+ * Group origin = bottom center; slot idx sits at local y = (idx + 0.5) * LAYER_H.
  */
-export class ContainerView {
+export class ColumnView {
   readonly group = new THREE.Group();
   readonly layerMeshes: THREE.Mesh[] = [];
   private ownGeos: THREE.BufferGeometry[] = [];
   private ownMats: THREE.Material[] = [];
 
-  constructor(readonly id: number, readonly capacity: number) {
-    const capH = containerHeight(capacity);
-
-    const backGeo = new THREE.BoxGeometry(LAYER_W + 0.1, capH + 0.08, 0.08);
-    const backMat = new THREE.MeshStandardMaterial({ color: FRAME_COLOR, roughness: 0.85 });
-    const back = new THREE.Mesh(backGeo, backMat);
-    back.position.set(0, capH / 2, -LAYER_D / 2 - 0.05);
-    this.group.add(back);
-
-    const sepGeo = new THREE.BoxGeometry(LAYER_W + 0.12, 0.16, LAYER_D + 0.1);
-    const sepMat = new THREE.MeshStandardMaterial({ color: FRAME_DARK, roughness: 0.8 });
-    const sep = new THREE.Mesh(sepGeo, sepMat);
-    sep.position.set(0, -0.13, 0);
-    this.group.add(sep);
-
-    this.ownGeos.push(backGeo, sepGeo);
-    this.ownMats.push(backMat, sepMat);
+  constructor() {
+    const slabGeo = new THREE.BoxGeometry(LAYER_W + 0.12, 0.16, LAYER_D + 0.1);
+    const slabMat = new THREE.MeshStandardMaterial({ color: 0x9599a4, roughness: 0.8 });
+    const slab = new THREE.Mesh(slabGeo, slabMat);
+    slab.position.set(0, -0.11, 0);
+    this.group.add(slab);
+    this.ownGeos.push(slabGeo);
+    this.ownMats.push(slabMat);
   }
 
   /** Attach an existing mesh at slot index (local coordinates). */
   attachAt(mesh: THREE.Mesh, index: number): void {
     this.group.add(mesh);
-    mesh.position.set(0, layerLocalY(index), 0);
+    mesh.position.set(0, (index + 0.5) * LAYER_H, 0);
     mesh.rotation.set(0, 0, 0);
     mesh.scale.setScalar(1);
     if (this.layerMeshes.length <= index) this.layerMeshes[index] = mesh;
     else this.layerMeshes.splice(index, 0, mesh);
   }
 
-  /** Create + attach a fresh mesh at slot index. */
   addLayer(type: number, index: number): THREE.Mesh {
     const mesh = makeLayerMesh(type);
     this.attachAt(mesh, index);
@@ -81,7 +74,7 @@ export class ContainerView {
 
   /**
    * Detach the top n layer meshes, re-parented to `root` with world transforms
-   * preserved. Returned top-first (last = deepest).
+   * preserved. Returned top-first.
    */
   detachTop(n: number, root: THREE.Object3D): THREE.Mesh[] {
     const out: THREE.Mesh[] = [];
@@ -97,15 +90,11 @@ export class ContainerView {
     return out;
   }
 
-  /** World-space center of the layer stack (for bursts). */
-  center(): THREE.Vector3 {
-    const c = new THREE.Vector3(0, containerHeight(this.capacity) / 2, 0);
-    return this.group.localToWorld(c);
-  }
-
-  /** World-space position of slot index. */
-  slotWorld(index: number): THREE.Vector3 {
-    return this.group.localToWorld(new THREE.Vector3(0, layerLocalY(index), 0));
+  /** World-space center of the top `count` layers (smash target). */
+  topGroupCenter(count: number): THREE.Vector3 {
+    const len = this.layerMeshes.length;
+    const midIdx = len - (count + 1) / 2;
+    return this.group.localToWorld(new THREE.Vector3(0, (midIdx + 0.5) * LAYER_H, 0));
   }
 
   dispose(): void {
@@ -114,6 +103,54 @@ export class ContainerView {
     for (const g of this.ownGeos) g.dispose();
     for (const m of this.ownMats) m.dispose();
     this.group.parent?.remove(this.group);
+  }
+}
+
+/**
+ * One ball queue above the conveyor: leader ball front and full-size,
+ * followers trailing up/back and shrinking.
+ */
+export class BallQueueView {
+  readonly ballMeshes: THREE.Mesh[] = []; // [0] = leader
+
+  constructor(
+    private scene: THREE.Scene,
+    types: number[],
+    private x: number,
+    private y: number
+  ) {
+    for (const t of types) {
+      const mesh = makeBallMesh(t);
+      this.scene.add(mesh);
+      this.ballMeshes.push(mesh);
+    }
+    this.layout();
+  }
+
+  /** Target transform for the ball at queue position i. */
+  slot(i: number): { pos: THREE.Vector3; scale: number } {
+    return {
+      pos: new THREE.Vector3(this.x, this.y + i * 0.22, -i * 0.55),
+      scale: 1 / (1 + i * 0.22),
+    };
+  }
+
+  layout(): void {
+    this.ballMeshes.forEach((m, i) => {
+      const s = this.slot(i);
+      m.position.copy(s.pos);
+      m.scale.setScalar(s.scale);
+    });
+  }
+
+  /** Remove the leader mesh (caller animates + disposes it). */
+  takeLeader(): THREE.Mesh | undefined {
+    return this.ballMeshes.shift();
+  }
+
+  dispose(): void {
+    for (const m of [...this.ballMeshes]) disposeMesh(m);
+    this.ballMeshes.length = 0;
   }
 }
 
@@ -144,7 +181,7 @@ interface Shard {
   spin: THREE.Vector3;
 }
 
-/** Particle burst for a container smash. One shared (burst-scoped) material, faded out. */
+/** Particle burst for a smash. One shared (burst-scoped) material, faded out. */
 export class PopBurst {
   private shards: Shard[] = [];
   private mat: THREE.MeshStandardMaterial;
